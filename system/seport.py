@@ -27,7 +27,7 @@ version_added: "1.7.1"
 options:
   port:
     description:
-      - Port number
+      - Port number or port range
     required: true
     default: null
   proto:
@@ -64,6 +64,8 @@ EXAMPLES = '''
 - seport: port=8888 proto=tcp setype=http_port_t state=present
 # Allow sshd to listen on tcp port 8991
 - seport: port=8991 proto=tcp setype=ssh_port_t state=present
+# Allow memcached to listen on tcp ports 10000-10100
+- seport: port=10000-10100 proto=tcp setype=memcache_port_t state=present
 '''
 
 try:
@@ -79,22 +81,65 @@ except ImportError:
     HAVE_SEOBJECT=False
 
 
-def semanage_port_add(module, port, proto, setype, do_reload, serange='s0', sestore=''):
-    """ Add SELinux port type to the policy.
+def semanage_port_exists(seport, port, proto):
+    """ Get the SELinux port type definition from policy. Return None if it does
+    not exist.
 
+    :param seport: Instance of seobject.portRecords
+
+    :type port: basestring
+    :param port: Port or port range (example: "8080", "8080-9090")
+
+    :type proto: basestring
+    :param proto: Protocol ('tcp' or 'udp')
+
+    :rtype: bool
+    :return: True if the SELinux port type definition exists, False otherwise
+    """
+    ports = port.split('-', 1)
+    if len(ports) == 1:
+        ports.extend(ports)
+    ports = map(int, ports)
+    record = (ports[0], ports[1], proto)
+    return record in seport.get_all()
+
+
+def semanage_port_add(module, port, proto, setype, do_reload, serange='s0', sestore=''):
+    """ Add SELinux port type definition to the policy.
+
+    :type module: AnsibleModule
+    :param module: Ansible module
+
+    :type port: basestring
+    :param port: Port or port range to add (example: "8080", "8080-9090")
+
+    :type proto: basestring
+    :param proto: Protocol ('tcp' or 'udp')
+
+    :type setype: basestring
+    :param setype: SELinux type
+
+    :type do_reload: bool
+    :param do_reload: Whether to reload SELinux policy after commit
+
+    :type serange: basestring
+    :param serange: SELinux MLS/MCS range (defaults to 's0')
+
+    :type sestore: basestring
+    :param sestore: SELinux store
+
+    :rtype: bool
     :return: True if the policy was changed, otherwise False
     """
     try:
         seport = seobject.portRecords(sestore)
-        if not module.check_mode:
+        change = not semanage_port_exists(seport, port, proto)
+        if change and not module.check_mode:
             seport.set_reload(do_reload)
             seport.add(port, proto, serange, setype)
 
     except ValueError as e:
-        if e.message == "Port {0}/{1} already defined".format(proto, port):
-            return False
-        else:
-            module.fail_json(msg="%s: %s\n" % (e.__class__.__name__, str(e)))
+        module.fail_json(msg="%s: %s\n" % (e.__class__.__name__, str(e)))
     except IOError as e:
         module.fail_json(msg="%s: %s\n" % (e.__class__.__name__, str(e)))
     except KeyError as e:
@@ -104,25 +149,39 @@ def semanage_port_add(module, port, proto, setype, do_reload, serange='s0', sest
     except RuntimeError as e:
         module.fail_json(msg="%s: %s\n" % (e.__class__.__name__, str(e)))
 
-    return True
+    return change
 
 
 def semanage_port_del(module, port, proto, do_reload, sestore=''):
-    """ Add SELinux port type to the policy.
+    """ Delete SELinux port type definition from the policy.
 
+    :type module: AnsibleModule
+    :param module: Ansible module
+
+    :type port: basestring
+    :param port: Port or port range to delete (example: "8080", "8080-9090")
+
+    :type proto: basestring
+    :param proto: Protocol ('tcp' or 'udp')
+
+    :type do_reload: bool
+    :param do_reload: Whether to reload SELinux policy after commit
+
+    :type sestore: basestring
+    :param sestore: SELinux store
+
+    :rtype: bool
     :return: True if the policy was changed, otherwise False
     """
     try:
         seport = seobject.portRecords(sestore)
-        if not module.check_mode:
+        change = not semanage_port_exists(seport, port, proto)
+        if change and not module.check_mode:
             seport.set_reload(do_reload)
             seport.delete(port, proto)
 
     except ValueError as e:
-        if e.message == "Port {0}/{1} is not defined".format(proto, port):
-            return False
-        else:
-            module.fail_json(msg="%s: %s\n" % (e.__class__.__name__, str(e)))
+        module.fail_json(msg="%s: %s\n" % (e.__class__.__name__, str(e)))
     except IOError as e:
         module.fail_json(msg="%s: %s\n" % (e.__class__.__name__, str(e)))
     except KeyError as e:
@@ -132,7 +191,7 @@ def semanage_port_del(module, port, proto, do_reload, sestore=''):
     except RuntimeError as e:
         module.fail_json(msg="%s: %s\n" % (e.__class__.__name__, str(e)))
 
-    return True
+    return change
 
 
 def main():
